@@ -122,35 +122,31 @@ int main(int argc, char **argv){
 
 
 
-void getdata(pid_t child, unsigned long long addr,
-             char *str, int len)
-{   char *laddr;
-    int i, j;
+char* getdata(pid_t child, unsigned long long addr, char *str)
+{   
+    char *laddr;
+    int i;
+    
     union u {
             long long val;
             char chars[long_size];
     }data;
+    
     i = 0;
-    j = len / long_size;
     laddr = str;
-    while(i < j) {
+    while(1) {
         data.val = ptrace(PTRACE_PEEKDATA,
                           child, addr + (i*8),
                           NULL);
-        //printf("Ptrace_peekdata %llu\n", data.val);
-
+        
         memcpy(laddr, data.chars, long_size);
-        ++i;
+        
+        if(data.chars[7]=='\0')
+        	break;
+
+        i += 1;
         laddr += long_size;
     }
-    j = len % long_size;
-    if(j != 0) {
-        data.val = ptrace(PTRACE_PEEKDATA,
-                          child, addr + i * 8,
-                          NULL);
-        memcpy(laddr, data.chars, j);
-    }
-    str[len] = '\0';
     //printf("Ptrace_peekdata %llu\n", data.val);
     //printf("errno %d %s\n",errno,strerror(errno));
 }
@@ -158,7 +154,6 @@ void getdata(pid_t child, unsigned long long addr,
 void sandb_handle_syscall(sandbox *sandb) {
   	int i, pstatus,s;
 	struct user_regs_struct regs;
-	
 	pstatus = ptrace(PTRACE_GETREGS, sandb->child, NULL, &regs);
 	if(pstatus < 0)
 		err(EXIT_FAILURE, "[SANDBOX] Failed to PTRACE_GETREGS:");
@@ -170,9 +165,8 @@ void sandb_handle_syscall(sandbox *sandb) {
 				sandb->insyscall = 1;
 				
 				if(sandb_syscalls[i].check){
-					char *str;
-					str = (char *)calloc(1,(regs.rsi+1)* sizeof(char));
-					getdata(sandb->child, regs.rdi, str,regs.rsi);
+					char str[1000];
+					getdata(sandb->child, regs.rdi, str);
 					printf("%s(\"%s\",%llu,%llu,%llu)", sandb_syscalls[i].syscallname, str, regs.rdi,regs.rsi, regs.rdx);
 				}
 				//else
