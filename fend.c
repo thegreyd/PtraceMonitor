@@ -10,6 +10,7 @@
 #include <sys/ptrace.h> //for ptrace
 #include <err.h> //for err
 #include <asm/unistd.h> // for __NR_read etc constants
+#include <fcntl.h> // for O_RD constants
 
 const int long_size = sizeof(unsigned long long);
 
@@ -32,7 +33,7 @@ sandb_syscall sandb_syscalls[] = {
   {__NR_exit,		"Exit",     NULL,	0},
   {__NR_brk,		"Break",    NULL,	0},
   {__NR_mmap,		"Mmap",     NULL,	0},
-  {__NR_access,		"Access",   NULL,	1},
+  {__NR_access,		"Access",   NULL,	0},
   {__NR_open,		"Open",    	NULL,	1},
   {__NR_fstat,		"Fstat",    NULL,	0},
   {__NR_close,		"Close",   	NULL,	0},
@@ -42,6 +43,131 @@ sandb_syscall sandb_syscalls[] = {
   {__NR_exit_group,	"Exit_grp", NULL,	0},
   {__NR_getdents,	"Getdents", NULL,	0},
 };
+
+typedef struct {
+	int mode;
+	char * mode_name;
+} file_open_mode;
+
+file_open_mode file_open_modes[] = {
+	{O_RDONLY,"O_RDONLY"},
+	{O_WRONLY,"O_WRONLY"},
+	{O_RDWR,"O_RDWR"},
+	{O_ACCMODE, "O_ACCMODE"},
+	{O_CREAT,"O_CREAT"},
+	{O_EXCL ,"O_EXCL"},
+	{O_NOCTTY,"O_NOCTTY"},
+	{O_TRUNC ,"O_TRUNC "},
+	{O_APPEND,"O_APPEND"},
+	{O_NONBLOCK,"O_NONBLOCK"},
+	{O_DSYNC ,"O_DSYNC"},
+	{FASYNC ,"FASYNC "},
+	{16384,"O_DIRECT"},
+	{32768,"O_LARGEFILE"},
+	{O_DIRECTORY,"O_DIRECTORY"},
+	{O_NOFOLLOW,"O_NOFOLLOW"},
+	{262144,"O_NOATIME"},
+	{O_CLOEXEC,"O_CLOEXEC"},
+};
+
+void get_octal(int i, int array[]){
+	int rem=0,base = 8, num = 0,j=0;
+	
+	for(j=0;j<20;j++)
+		array[j]=-1;
+	
+	j=0;
+	while(i>base){
+		array[j] = i%base;
+		i = i/8;
+		j+=1;
+	}
+	array[j]=i;
+}
+
+char * get_open_mode(int i, char *mode){
+	
+	int array[20];
+	get_octal(i,array);
+
+	strcpy(mode," ");
+
+	if(array[0]==0){
+		strcat(mode,file_open_modes[0].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[0]==1){
+		strcat(mode,file_open_modes[1].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[0]==2){
+		strcat(mode,file_open_modes[2].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[0]==3){
+		strcat(mode,file_open_modes[3].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[2]==1){
+		strcat(mode,file_open_modes[4].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[2]==2){
+		strcat(mode,file_open_modes[5].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[2]==4){
+		strcat(mode,file_open_modes[6].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[3]==1){
+		strcat(mode,file_open_modes[7].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[3]==2){
+		strcat(mode,file_open_modes[8].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[3]==4){
+		strcat(mode,file_open_modes[9].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[4]==1){
+		strcat(mode,file_open_modes[10].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[4]==2){
+		strcat(mode,file_open_modes[11].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[4]==4){
+		strcat(mode,file_open_modes[12].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[5]==1){
+		strcat(mode,file_open_modes[13].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[5]==2){
+		strcat(mode,file_open_modes[14].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[5]==4){
+		strcat(mode,file_open_modes[15].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[6]==1){
+		strcat(mode,file_open_modes[16].mode_name);
+		strcat(mode,"|");
+	}
+	if(array[6]==2){
+		strcat(mode,file_open_modes[17].mode_name);
+		strcat(mode,"|");
+	}
+	return mode;
+}
+
+
 
 void sandb_init(sandbox *, int, char**);
 void sandb_run(sandbox *);
@@ -120,16 +246,13 @@ int main(int argc, char **argv){
 	return EXIT_SUCCESS;
 }
 
-
-
-char* getdata(pid_t child, unsigned long long addr, char *str)
-{   
+void get_string(pid_t child, unsigned long long addr, char *str){   
     char *laddr;
     int i;
     
     union u {
-            long long val;
-            char chars[long_size];
+        long long val;
+        char chars[long_size];
     }data;
     
     i = 0;
@@ -147,12 +270,10 @@ char* getdata(pid_t child, unsigned long long addr, char *str)
         i += 1;
         laddr += long_size;
     }
-    //printf("Ptrace_peekdata %llu\n", data.val);
-    //printf("errno %d %s\n",errno,strerror(errno));
 }
 
 void sandb_handle_syscall(sandbox *sandb) {
-  	int i, pstatus,s;
+  	int i,j, pstatus,s;
 	struct user_regs_struct regs;
 	pstatus = ptrace(PTRACE_GETREGS, sandb->child, NULL, &regs);
 	if(pstatus < 0)
@@ -165,9 +286,14 @@ void sandb_handle_syscall(sandbox *sandb) {
 				sandb->insyscall = 1;
 				
 				if(sandb_syscalls[i].check){
-					char str[1000];
-					getdata(sandb->child, regs.rdi, str);
-					printf("%s(\"%s\",%llu,%llu,%llu)", sandb_syscalls[i].syscallname, str, regs.rdi,regs.rsi, regs.rdx);
+					char filepath[1000];
+					get_string(sandb->child, regs.rdi, filepath);
+					
+					char mode[100];
+					get_open_mode(regs.rsi, mode);
+					
+					printf("%s(\"%s\",%s)", sandb_syscalls[i].syscallname, filepath, mode);
+					//exit(0);
 				}
 				//else
 					//printf("%s(%llu,%llu,%llu)", sandb_syscalls[i].syscallname, regs.rdi, regs.rsi, regs.rdx);
