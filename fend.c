@@ -13,6 +13,7 @@
 #include <fcntl.h> // for O_RD constants
 
 const int long_size = sizeof(unsigned long long);
+typedef struct user_regs_struct uregs;
 
 typedef struct {
 	pid_t child;
@@ -23,9 +24,21 @@ typedef struct {
 typedef struct {
   int syscall;
   const char * syscallname;
-  void (*callback)(sandbox *, struct user_regs_struct *);
+  void (*callback)(sandbox *, uregs *);
   int check;
 } sandb_syscall;
+
+void handle_open(sandbox *, uregs *);
+void get_open_mode(int, char *);
+void sandb_init(sandbox *, int, char**);
+void sandb_run(sandbox *);
+void sandb_kill(sandbox *);
+void sandb_handle_syscall(sandbox *);
+void parse_config(FILE *);
+int find_config(char *);
+int parse_input(int, char **);
+int find_local_config();
+void get_string(sandbox *, unsigned long long, char *str);
 
 sandb_syscall sandb_syscalls[] = {
   {__NR_read,		"Read",		NULL,	0},
@@ -34,7 +47,7 @@ sandb_syscall sandb_syscalls[] = {
   {__NR_brk,		"Break",    NULL,	0},
   {__NR_mmap,		"Mmap",     NULL,	0},
   {__NR_access,		"Access",   NULL,	0},
-  {__NR_open,		"Open",    	NULL,	1},
+  {__NR_open,		"Open",    	handle_open,	0},
   {__NR_fstat,		"Fstat",    NULL,	0},
   {__NR_close,		"Close",   	NULL,	0},
   {__NR_mprotect,	"Mprotect", NULL,	0},
@@ -44,138 +57,46 @@ sandb_syscall sandb_syscalls[] = {
   {__NR_getdents,	"Getdents", NULL,	0},
 };
 
-typedef struct {
-	int mode;
-	char * mode_name;
-} file_open_mode;
+void handle_open(sandbox *sandb, uregs *regs ){
+	if(sandb->insyscall == 0){//syscall entry
+		char filepath[1000];
+		char mode[10];
 
-file_open_mode file_open_modes[] = {
-	{O_RDONLY,"O_RDONLY"},
-	{O_WRONLY,"O_WRONLY"},
-	{O_RDWR,"O_RDWR"},
-	{O_ACCMODE, "O_ACCMODE"},
-	{O_CREAT,"O_CREAT"},
-	{O_EXCL ,"O_EXCL"},
-	{O_NOCTTY,"O_NOCTTY"},
-	{O_TRUNC ,"O_TRUNC "},
-	{O_APPEND,"O_APPEND"},
-	{O_NONBLOCK,"O_NONBLOCK"},
-	{O_DSYNC ,"O_DSYNC"},
-	{FASYNC ,"FASYNC "},
-	{16384,"O_DIRECT"},
-	{32768,"O_LARGEFILE"},
-	{O_DIRECTORY,"O_DIRECTORY"},
-	{O_NOFOLLOW,"O_NOFOLLOW"},
-	{262144,"O_NOATIME"},
-	{O_CLOEXEC,"O_CLOEXEC"},
-};
-
-void get_octal(int i, int array[]){
-	int rem=0,base = 8, num = 0,j=0;
+		get_string(sandb, regs->rdi, filepath);
+		get_open_mode(regs->rsi, mode);
+		
+		printf("Open(\"%s\",%s)", filepath, mode);
+		sandb->insyscall = 1;
+	}
 	
-	for(j=0;j<20;j++)
-		array[j]=-1;
+	else{
+		if(regs->rax < 0)
+			printf(" = %d, %s\n",(int)regs->rax,strerror(-1*(regs->rax)));
+		else
+			printf(" = %d\n",(int)regs->rax);
 	
-	j=0;
-	while(i>base){
-		array[j] = i%base;
-		i = i/8;
-		j+=1;
+		sandb->insyscall=0;
 	}
-	array[j]=i;
-}
-
-char * get_open_mode(int i, char *mode){
-	
-	int array[20];
-	get_octal(i,array);
-
-	strcpy(mode," ");
-
-	if(array[0]==0){
-		strcat(mode,file_open_modes[0].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[0]==1){
-		strcat(mode,file_open_modes[1].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[0]==2){
-		strcat(mode,file_open_modes[2].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[0]==3){
-		strcat(mode,file_open_modes[3].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[2]==1){
-		strcat(mode,file_open_modes[4].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[2]==2){
-		strcat(mode,file_open_modes[5].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[2]==4){
-		strcat(mode,file_open_modes[6].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[3]==1){
-		strcat(mode,file_open_modes[7].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[3]==2){
-		strcat(mode,file_open_modes[8].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[3]==4){
-		strcat(mode,file_open_modes[9].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[4]==1){
-		strcat(mode,file_open_modes[10].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[4]==2){
-		strcat(mode,file_open_modes[11].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[4]==4){
-		strcat(mode,file_open_modes[12].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[5]==1){
-		strcat(mode,file_open_modes[13].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[5]==2){
-		strcat(mode,file_open_modes[14].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[5]==4){
-		strcat(mode,file_open_modes[15].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[6]==1){
-		strcat(mode,file_open_modes[16].mode_name);
-		strcat(mode,"|");
-	}
-	if(array[6]==2){
-		strcat(mode,file_open_modes[17].mode_name);
-		strcat(mode,"|");
-	}
-	return mode;
 }
 
 
 
-void sandb_init(sandbox *, int, char**);
-void sandb_run(sandbox *);
-void sandb_kill(sandbox *);
-void sandb_handle_syscall(sandbox *sandb);
+void get_open_mode(int flags, char *mode){
+	int accessMode = flags & O_ACCMODE;
 
-void load_config(char *file_path){
-	FILE *config_file;
+	strcpy(mode,"");
+	if(accessMode==O_WRONLY)
+		strcat(mode,"O_WRONLY");
+	else if(accessMode == O_RDWR)
+		strcat(mode,"O_RDWR");
+	else
+		strcat(mode,"O_RDONLY");
+}
+
+
+
+void parse_config(FILE *config){
+	
 }
 
 int find_config(char *config_path){
@@ -186,6 +107,7 @@ int find_config(char *config_path){
 		return(EXIT_FAILURE);
 	
 	printf("Found config file at %s.\n",config_path);
+	//load_config(config_file);
 	fclose(config_file);
 	return(EXIT_SUCCESS);
 }
@@ -246,7 +168,7 @@ int main(int argc, char **argv){
 	return EXIT_SUCCESS;
 }
 
-void get_string(pid_t child, unsigned long long addr, char *str){   
+void get_string(sandbox *sandb, unsigned long long addr, char *str){   
     char *laddr;
     int i;
     
@@ -258,76 +180,28 @@ void get_string(pid_t child, unsigned long long addr, char *str){
     i = 0;
     laddr = str;
     while(1) {
-        data.val = ptrace(PTRACE_PEEKDATA,
-                          child, addr + (i*8),
-                          NULL);
-        
+        data.val = ptrace(PTRACE_PEEKDATA,sandb->child, addr + (i*8),NULL);
         memcpy(laddr, data.chars, long_size);
-        
         if(data.chars[7]=='\0')
         	break;
-
-        i += 1;
+		i += 1;
         laddr += long_size;
     }
 }
 
+
+
 void sandb_handle_syscall(sandbox *sandb) {
-  	int i,j, pstatus,s;
-	struct user_regs_struct regs;
-	pstatus = ptrace(PTRACE_GETREGS, sandb->child, NULL, &regs);
-	if(pstatus < 0)
+  	int i, status;
+	uregs regs;
+	status = ptrace(PTRACE_GETREGS, sandb->child, NULL, &regs);
+	if(status < 0)
 		err(EXIT_FAILURE, "[SANDBOX] Failed to PTRACE_GETREGS:");
 
 	for(i = 0; i < sizeof(sandb_syscalls)/sizeof(*sandb_syscalls); i++) {
 		if(regs.orig_rax == sandb_syscalls[i].syscall) {
-			
-			if(sandb->insyscall == 0){//syscall entry
-				sandb->insyscall = 1;
-				
-				if(sandb_syscalls[i].check){
-					char filepath[1000];
-					get_string(sandb->child, regs.rdi, filepath);
-					
-					char mode[100];
-					get_open_mode(regs.rsi, mode);
-					
-					printf("%s(\"%s\",%s)", sandb_syscalls[i].syscallname, filepath, mode);
-					//exit(0);
-				}
-				//else
-					//printf("%s(%llu,%llu,%llu)", sandb_syscalls[i].syscallname, regs.rdi, regs.rsi, regs.rdx);
-			}
-
-			else{
-				if(sandb_syscalls[i].check){
-					if((long int)regs.rax<0){
-						printf(" = %ld, %s\n",(long int)regs.rax,strerror(-1*regs.rax));
-					}
-					else
-						printf(" = %ld\n",(long int)regs.rax);
-				}
-				sandb->insyscall=0;
-			}
-
-			/*
-			
-			if(sandb_syscalls[i].callback != NULL){
-				printf("Callback function is not NULLl\n");
+			if(sandb_syscalls[i].callback != NULL)
 				sandb_syscalls[i].callback(sandb, &regs);
-			}
-			else{
-				printf("In else\n" );
-				s=ptrace(PTRACE_CONT, sandb->child, NULL, NULL);
-				if(s==-1)
-					err(EXIT_FAILURE, "[SANDBOX] Failed to PTRACE_CONT:");
-				wait(NULL);
-				//s=ptrace(PTRACE_SYSCALL, sandb->child, NULL, NULL);
-
-				//if(s==-1)
-				//	err(EXIT_FAILURE, "[SANDBOX] Failed to PTRACE_SYSCALL:");
-				
-			}*/	
 			return;
 		}
 	}
@@ -336,8 +210,6 @@ void sandb_handle_syscall(sandbox *sandb) {
 		printf("[SANDBOX] Segfault ?! KILLING !!!\n");
 		sandb_kill(sandb);
 	}
-	//else
-		//printf("[SANDBOX] Trying to use devil syscall (%llu) \n", regs.orig_rax);
 	return;
 }
 
@@ -345,8 +217,6 @@ void sandb_run(sandbox *sandb) {
 	int status, pstatus;
 
 	pstatus = ptrace(PTRACE_SYSCALL, sandb->child, NULL, NULL);
-	
-		
 	if(pstatus < 0) {
 		if(errno == ESRCH) {
 			//waitpid(sandb->child, &status, __WALL | WNOHANG);
@@ -356,16 +226,11 @@ void sandb_run(sandbox *sandb) {
 			err(EXIT_FAILURE, "Ptrace Error");
 	}
 
-	
 	wait(&status);
-
 	if(WIFEXITED(status))
 		exit(EXIT_SUCCESS);
-
 	if(WIFSTOPPED(status))
 		sandb_handle_syscall(sandb);
-
-	
 }
 
 void sandb_kill(sandbox *sandb) {
