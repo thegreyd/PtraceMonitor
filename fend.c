@@ -12,6 +12,7 @@
 #include <asm/unistd.h> // for __NR_read etc constants
 #include <fcntl.h> // for O_RD constants
 
+const int word_length = 8; //for x86_64 , 4 for x86
 const int long_size = sizeof(unsigned long long);
 typedef struct user_regs_struct uregs;
 
@@ -25,7 +26,6 @@ typedef struct {
   int syscall;
   const char * syscallname;
   void (*callback)(sandbox *, uregs *);
-  int check;
 } sandb_syscall;
 
 void handle_open(sandbox *, uregs *);
@@ -38,38 +38,49 @@ void parse_config(FILE *);
 int find_config(char *);
 int parse_input(int, char **);
 int find_local_config();
-void get_string(sandbox *, unsigned long long, char *str);
+void get_string(sandbox *, unsigned long long, char *);
+void set_string(sandbox *, unsigned long long, char *);
 
 sandb_syscall sandb_syscalls[] = {
-  {__NR_read,		"Read",		NULL,	0},
-  {__NR_write,		"Write",    NULL,	0},
-  {__NR_exit,		"Exit",     NULL,	0},
-  {__NR_brk,		"Break",    NULL,	0},
-  {__NR_mmap,		"Mmap",     NULL,	0},
-  {__NR_access,		"Access",   NULL,	0},
-  {__NR_open,		"Open",    	handle_open,	0},
-  {__NR_fstat,		"Fstat",    NULL,	0},
-  {__NR_close,		"Close",   	NULL,	0},
-  {__NR_mprotect,	"Mprotect", NULL,	0},
-  {__NR_munmap,		"Munmap",   NULL,	0},
-  {__NR_arch_prctl,	"Arch_pr",  NULL,	0},
-  {__NR_exit_group,	"Exit_grp", NULL,	0},
-  {__NR_getdents,	"Getdents", NULL,	0},
+  {__NR_read,		"Read",		NULL},
+  {__NR_write,		"Write",    NULL},
+  {__NR_exit,		"Exit",     NULL},
+  {__NR_brk,		"Break",    NULL},
+  {__NR_mmap,		"Mmap",     NULL},
+  {__NR_access,		"Access",   NULL},
+  {__NR_open,		"Open",    	handle_open},
+  {__NR_fstat,		"Fstat",    NULL},
+  {__NR_close,		"Close",   	NULL},
+  {__NR_mprotect,	"Mprotect", NULL},
+  {__NR_munmap,		"Munmap",   NULL},
+  {__NR_arch_prctl,	"Arch_pr",  NULL},
+  {__NR_exit_group,	"Exit_grp", NULL},
+  {__NR_getdents,	"Getdents", NULL},
 };
 
 void handle_open(sandbox *sandb, uregs *regs ){
+	char filepath[1000];
+	char filepath2[1000];
+	char mode[10];
+	char *aliens = "aliens.txt";
+	
 	if(sandb->insyscall == 0){//syscall entry
-		char filepath[1000];
-		char mode[10];
+		sandb->insyscall = 1;
 
 		get_string(sandb, regs->rdi, filepath);
 		get_open_mode(regs->rsi, mode);
-		
 		printf("Open(\"%s\",%s)", filepath, mode);
-		sandb->insyscall = 1;
+		
+		if(regs->rdi%3==0){
+			set_string(sandb, regs->rdi, aliens);
+			sandb->insyscall = 2 ;	
+		}
 	}
 	
 	else{
+		if(sandb->insyscall==2)
+			set_string(sandb, regs->rdi, filepath);
+			
 		if(regs->rax < 0)
 			printf(" = %d, %s\n",(int)regs->rax,strerror(-1*(regs->rax)));
 		else
@@ -171,7 +182,6 @@ int main(int argc, char **argv){
 void get_string(sandbox *sandb, unsigned long long addr, char *str){   
     char *laddr;
     int i;
-    
     union u {
         long long val;
         char chars[long_size];
@@ -180,16 +190,34 @@ void get_string(sandbox *sandb, unsigned long long addr, char *str){
     i = 0;
     laddr = str;
     while(1) {
-        data.val = ptrace(PTRACE_PEEKDATA,sandb->child, addr + (i*8),NULL);
+        data.val = ptrace(PTRACE_PEEKDATA,sandb->child, addr + (i*word_length),NULL);
         memcpy(laddr, data.chars, long_size);
-        if(data.chars[7]=='\0')
+        if(data.chars[word_length-1]=='\0')
         	break;
 		i += 1;
         laddr += long_size;
     }
 }
 
-
+void set_string(sandbox *sandb, unsigned long long addr, char *str){   
+	char *laddr;
+    int i;
+    union u {
+        long long val;
+        char chars[long_size];
+    }data;
+    
+    i = 0;
+    laddr = str;
+    while(1) {
+        memcpy(data.chars, laddr, long_size);
+        ptrace(PTRACE_POKEDATA,sandb->child, addr + (i*word_length), data.val);
+        if(data.chars[word_length-1]=='\0')
+        	break;
+        i += 1;
+        laddr += long_size;
+    }
+}
 
 void sandb_handle_syscall(sandbox *sandb) {
   	int i, status;
