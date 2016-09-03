@@ -3,17 +3,26 @@
 #include <stdio.h> //fprintf, fscanf, printf, scanf, perror
 #include <unistd.h> // fork exec
 #include <sys/types.h> //for pid_t
-#include <stdlib.h> //for exit and EXIT
+#include <stdlib.h> //for exit and EXIT, realpath
 #include <sys/wait.h> //wait waitpid
-#include <string.h> // strcmp
+#include <string.h> // strcmp, strcpy, strerror
 #include <errno.h> //for errno
 #include <sys/ptrace.h> //for ptrace
 #include <err.h> //for err
 #include <asm/unistd.h> // for __NR_read etc constants
 #include <fcntl.h> // for O_RD constants
+#include <fnmatch.h> // for matching wildcards
+#include <sys/stat.h> // for checking if directory or file
 
+char global_config_path[1000];
+char *config_name = ".fendrc";
+char *restricted_file = "res";
+char *restricted_directory = "rd";
+char *restricted_link = "rl";
+char *restricted_name;
 const int word_length = 8; //for x86_64 , 4 for x86
 const int long_size = sizeof(unsigned long long);
+
 typedef struct user_regs_struct uregs;
 
 typedef struct {
@@ -24,12 +33,12 @@ typedef struct {
 
 typedef struct {
   int syscall;
-  const char * syscallname;
-  void (*callback)(sandbox *, uregs *);
+  void (*callback)(sandbox *, unsigned long long *, unsigned long long *, unsigned long long *);
+  int pathpos;
 } sandb_syscall;
 
-void handle_open(sandbox *, uregs *);
-void get_open_mode(int, char *);
+void handle_open(sandbox *, unsigned long long *, unsigned long long *, unsigned long long *);
+int get_open_mode(unsigned long long *, char *);
 void sandb_init(sandbox *, int, char**);
 void sandb_run(sandbox *);
 void sandb_kill(sandbox *);
@@ -38,100 +47,127 @@ void parse_config(FILE *);
 int find_config(char *);
 int parse_input(int, char **);
 int find_local_config();
-void get_string(sandbox *, unsigned long long, char *);
-void set_string(sandbox *, unsigned long long, char *);
+void get_string(sandbox *, unsigned long long *, char *);
+void set_string(sandbox *, unsigned long long *, char *);
+int block_file(char *, int mode);
+int rw_perm(int);
 
 sandb_syscall sandb_syscalls[] = {
-  {__NR_read,		"Read",		NULL},
-  {__NR_write,		"Write",    NULL},
-  {__NR_exit,		"Exit",     NULL},
-  {__NR_brk,		"Break",    NULL},
-  {__NR_mmap,		"Mmap",     NULL},
-  {__NR_access,		"Access",   NULL},
-  {__NR_open,		"Open",    	handle_open},
-  {__NR_fstat,		"Fstat",    NULL},
-  {__NR_close,		"Close",   	NULL},
-  {__NR_mprotect,	"Mprotect", NULL},
-  {__NR_munmap,		"Munmap",   NULL},
-  {__NR_arch_prctl,	"Arch_pr",  NULL},
-  {__NR_exit_group,	"Exit_grp", NULL},
-  {__NR_getdents,	"Getdents", NULL},
+  {__NR_creat,	NULL,	0},
+  {__NR_openat, handle_open,	1},
+  {__NR_open,	handle_open,	0},
+  {__NR_access,	NULL,			0},
+  {__NR_fstat,	NULL,			0},
 };
 
-void handle_open(sandbox *sandb, uregs *regs ){
+int rw_perm(int p){
+	if(p==11) return 3;
+	else if(p==10) return 2;
+	else return p;
+}
+
+int block_file(char *filepath, int demand){
+	int match, allowed, status, block=0;
+	char pattern[1000];
+	char real_path[1000];
+	struct stat sb;
+
+	realpath(filepath,real_path);
+	
+	FILE *config = fopen(global_config_path,"r");
+	status = fscanf(config, "%d %s", &allowed, pattern);
+	allowed = rw_perm(allowed/10);
+	while(status != EOF) {
+  		match = fnmatch(pattern, real_path, 0);
+  		if(match == 0){
+  			if((allowed & demand) != demand)
+  				block=1;
+  			else
+  				block=0;
+  		}
+  		status = fscanf(config, "%d %s", &allowed, pattern);
+	}
+	fclose(config);
+	
+	restricted_name = restricted_file;
+	stat(filepath, &sb);
+    if(S_ISDIR(sb.st_mode))
+       restricted_name = restricted_directory;
+    else if(S_ISLNK(sb.st_mode))
+       restricted_name = restricted_link;
+	
+	return block;
+}
+
+
+void handle_open(sandbox *sandb, unsigned long long *fileaddr, unsigned long long *modeaddr, unsigned long long *returnaddr){
 	char filepath[1000];
-	char filepath2[1000];
 	char mode[10];
-	char *aliens = "aliens.txt";
+	int m;
 	
 	if(sandb->insyscall == 0){//syscall entry
 		sandb->insyscall = 1;
 
-		get_string(sandb, regs->rdi, filepath);
-		get_open_mode(regs->rsi, mode);
+		get_string(sandb, fileaddr, filepath);
+		m=get_open_mode(modeaddr, mode);
 		printf("Open(\"%s\",%s)", filepath, mode);
 		
-		if(regs->rdi%3==0){
-			set_string(sandb, regs->rdi, aliens);
+		if(block_file(filepath,m)){
+			set_string(sandb,fileaddr,restricted_name);
 			sandb->insyscall = 2 ;	
 		}
 	}
 	
 	else{
-		if(sandb->insyscall==2)
-			set_string(sandb, regs->rdi, filepath);
+		if(sandb->insyscall==2){
+			set_string(sandb, fileaddr, filepath);
+		}
 			
-		if(regs->rax < 0)
-			printf(" = %d, %s\n",(int)regs->rax,strerror(-1*(regs->rax)));
-		else
-			printf(" = %d\n",(int)regs->rax);
+		if(*returnaddr < 0){
+			printf(" = %d, %s\n",(int)*returnaddr,strerror(-1*(*returnaddr)));
+		}
+		else{
+			printf(" = %d\n",(int)*returnaddr);
+		}
 	
 		sandb->insyscall=0;
 	}
 }
 
-
-
-void get_open_mode(int flags, char *mode){
-	int accessMode = flags & O_ACCMODE;
+int get_open_mode(unsigned long long *flags, char *mode){
+	int accessMode = *flags & O_ACCMODE;
 
 	strcpy(mode,"");
-	if(accessMode==O_WRONLY)
+	if(accessMode==O_WRONLY){
 		strcat(mode,"O_WRONLY");
-	else if(accessMode == O_RDWR)
+		return 1;
+	}
+	else if(accessMode == O_RDWR){
 		strcat(mode,"O_RDWR");
-	else
-		strcat(mode,"O_RDONLY");
-}
-
-
-
-void parse_config(FILE *config){
-	
+		return 3;
+	}
+	strcat(mode,"O_RDONLY");
+	return 2;
 }
 
 int find_config(char *config_path){
-	FILE *config_file;
-
-	config_file = fopen(config_path,"r");
-	if(!config_file)
+	if(access(config_path, F_OK ) == -1)
 		return(EXIT_FAILURE);
 	
-	printf("Found config file at %s.\n",config_path);
-	//load_config(config_file);
-	fclose(config_file);
+	strcpy(global_config_path,config_path);
+	printf("Found config file at %s.\n",global_config_path);
 	return(EXIT_SUCCESS);
 }
 				
 int find_local_config(){
 	int status;
 	char home_config_path[100];
-	char *local_config_name = ".fendrc"; 
-	
-	status = find_config(local_config_name);
+	 
+	status = find_config(global_config_path);
 	if(status==EXIT_FAILURE){
 		strcpy(home_config_path, getenv("HOME"));
-		strcat(home_config_path, "/.fendrc");
+		strcat(home_config_path, "/");
+		strcat(home_config_path, global_config_path);
 		status = find_config(home_config_path);
 		if(status==EXIT_FAILURE)
 			err(EXIT_FAILURE, "Must provide a config file.");
@@ -167,6 +203,8 @@ int main(int argc, char **argv){
 	int config_local;
 	pid_t childpid;
 	
+	strcpy(global_config_path,config_name);
+
 	config_local = parse_input(argc, argv);
 	sandbox sandb;
 	if(config_local)
@@ -179,7 +217,7 @@ int main(int argc, char **argv){
 	return EXIT_SUCCESS;
 }
 
-void get_string(sandbox *sandb, unsigned long long addr, char *str){   
+void get_string(sandbox *sandb, unsigned long long *addr, char *str){   
     char *laddr;
     int i;
     union u {
@@ -190,7 +228,7 @@ void get_string(sandbox *sandb, unsigned long long addr, char *str){
     i = 0;
     laddr = str;
     while(1) {
-        data.val = ptrace(PTRACE_PEEKDATA,sandb->child, addr + (i*word_length),NULL);
+        data.val = ptrace(PTRACE_PEEKDATA,sandb->child, *addr + (i*word_length),NULL);
         memcpy(laddr, data.chars, long_size);
         if(data.chars[word_length-1]=='\0')
         	break;
@@ -199,7 +237,7 @@ void get_string(sandbox *sandb, unsigned long long addr, char *str){
     }
 }
 
-void set_string(sandbox *sandb, unsigned long long addr, char *str){   
+void set_string(sandbox *sandb, unsigned long long *addr, char *str){   
 	char *laddr;
     int i;
     union u {
@@ -211,7 +249,7 @@ void set_string(sandbox *sandb, unsigned long long addr, char *str){
     laddr = str;
     while(1) {
         memcpy(data.chars, laddr, long_size);
-        ptrace(PTRACE_POKEDATA,sandb->child, addr + (i*word_length), data.val);
+        ptrace(PTRACE_POKEDATA,sandb->child, *addr + (i*word_length), data.val);
         if(data.chars[word_length-1]=='\0')
         	break;
         i += 1;
@@ -228,11 +266,17 @@ void sandb_handle_syscall(sandbox *sandb) {
 
 	for(i = 0; i < sizeof(sandb_syscalls)/sizeof(*sandb_syscalls); i++) {
 		if(regs.orig_rax == sandb_syscalls[i].syscall) {
-			if(sandb_syscalls[i].callback != NULL)
-				sandb_syscalls[i].callback(sandb, &regs);
+			if(sandb_syscalls[i].callback != NULL){
+				if(sandb_syscalls[i].pathpos==0)
+					sandb_syscalls[i].callback(sandb,&regs.rdi,&regs.rsi,&regs.rax);
+				else
+					sandb_syscalls[i].callback(sandb,&regs.rsi,&regs.rdx,&regs.rax);
+			}
 			return;
 		}
 	}
+	//if(!found)
+	//	printf("System call %llu\n", regs.orig_rax);
 
 	if(regs.orig_rax == -1){
 		printf("[SANDBOX] Segfault ?! KILLING !!!\n");

@@ -1,7 +1,13 @@
-fend: fend.c aliens.txt
+fend: fend.c res rd rl
 	gcc -o fend fend.c
-aliens.txt:
-	touch aliens.txt
-	chmod 000 aliens.txt
+rd:
+	mkdir rd
+	chmod 000 rd
+res:
+	touch res
+	chmod 000 res
+rl: rd
+	ln -s rd rl
 clean:
-	rm fend aliens.txt
+	rm -f fend res rl
+	rmdir rd
