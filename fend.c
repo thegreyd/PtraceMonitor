@@ -14,15 +14,7 @@
 #include <fnmatch.h> // for matching wildcards
 #include <sys/stat.h> // for checking if directory or file
 
-char global_config_path[1000];
-char *config_name = ".fendrc";
-char *restricted_file = "res";
-char *restricted_directory = "rd";
-char *restricted_link = "rl";
-char *restricted_name;
-const int word_length = 8; //for x86_64 , 4 for x86
-const int long_size = sizeof(unsigned long long);
-
+typedef unsigned long long ull;
 typedef struct user_regs_struct uregs;
 
 typedef struct {
@@ -31,123 +23,198 @@ typedef struct {
 	int insyscall;
 } sandbox;
 
+char global_config_path[1000];
+char *config_name = ".fendrc";
+char *restricted_file = "/root/r";
+const int word_length = 8; //for x86_64 , 4 for x86
+const int long_size = sizeof(ull);
+
 typedef struct {
   int syscall;
-  void (*callback)(sandbox *, unsigned long long *, unsigned long long *, unsigned long long *);
-  int pathpos;
+  void (*callback)(sandbox *, uregs *,int);
+  int fileindex;
 } sandb_syscall;
 
-void handle_open(sandbox *, unsigned long long *, unsigned long long *, unsigned long long *);
-int get_open_mode(unsigned long long *, char *);
+void handle_open(sandbox *, uregs *, int);
+void handle_write(sandbox *, uregs *, int);
+int get_open_mode(ull *, char *);
+
 void sandb_init(sandbox *, int, char**);
 void sandb_run(sandbox *);
 void sandb_kill(sandbox *);
 void sandb_handle_syscall(sandbox *);
-void parse_config(FILE *);
-int find_config(char *);
+
 int parse_input(int, char **);
+int find_config(char *);
 int find_local_config();
-void get_string(sandbox *, unsigned long long *, char *);
-void set_string(sandbox *, unsigned long long *, char *);
-int block_file(char *, int mode);
+
+void get_string(sandbox *, ull *, char *);
+void set_string(sandbox *, ull *, char *);
+
 int rw_perm(int);
+ull get_addr(uregs *, int);
+int block_open(int,int);
+int block_file(char *, int);
 
 sandb_syscall sandb_syscalls[] = {
-  {__NR_creat,	NULL,	0},
+  {__NR_creat,	handle_write,	0},
   {__NR_openat, handle_open,	1},
   {__NR_open,	handle_open,	0},
   {__NR_access,	NULL,			0},
   {__NR_fstat,	NULL,			0},
+  {__NR_mkdir, 	handle_write,	0},
+  {__NR_rmdir, 	handle_write,	0},
+  {__NR_unlink, handle_write,	0},
+  {__NR_unlinkat,handle_write,	1},
+  {__NR_execve, handle_exec,	0}
 };
 
 int rw_perm(int p){
 	if(p==11) return 3;
-	else if(p==10) return 2;
-	else return p;
+	else if(p==10) return 0;
+	else if(p==0) return -1;
+	else if(p==1) return 1;
 }
 
-int block_file(char *filepath, int demand){
-	int match, allowed, status, block=0;
-	char pattern[1000];
-	char real_path[1000];
-	struct stat sb;
+ull get_addr(uregs *regs, int index){
+	switch(index){
+		case(0):
+			return regs->rdi;
+		case(1):
+			return regs->rsi;
+		case(2):
+			return regs->rdx;
+		case(3):
+			return regs->rcx;
+		default:
+			return 0;
+	}
+}
 
-	realpath(filepath,real_path);
+int block_file(char *path, int demand){
+	int allowed, block=0;
+	char pattern[1000];
 	
 	FILE *config = fopen(global_config_path,"r");
-	status = fscanf(config, "%d %s", &allowed, pattern);
-	allowed = rw_perm(allowed/10);
-	while(status != EOF) {
-  		match = fnmatch(pattern, real_path, 0);
-  		if(match == 0){
-  			if((allowed & demand) != demand)
-  				block=1;
-  			else
-  				block=0;
-  		}
-  		status = fscanf(config, "%d %s", &allowed, pattern);
-	}
+	while(fscanf(config, "%d %s", &allowed, pattern) != EOF) {
+  		allowed = rw_perm(allowed/10);
+  		if(fnmatch(pattern, path, 0) == 0)
+  			block = (allowed != 3) && (allowed != demand);
+  	}
 	fclose(config);
-	
-	restricted_name = restricted_file;
-	stat(filepath, &sb);
-    if(S_ISDIR(sb.st_mode))
-       restricted_name = restricted_directory;
-    else if(S_ISLNK(sb.st_mode))
-       restricted_name = restricted_link;
-	
 	return block;
 }
 
+int block_file_exec(char *path){
+	int allowed, block=0;
+	char pattern[1000];
+	
+	FILE *config = fopen(global_config_path,"r");
+	while(fscanf(config, "%d %s", &allowed, pattern) != EOF) {
+  		allowed = allowed%10;
+  		if(fnmatch(pattern, path, 0) == 0)
+  			block = (allowed == 1);
+  	}
+	fclose(config);
+	return block;
+}
 
-void handle_open(sandbox *sandb, unsigned long long *fileaddr, unsigned long long *modeaddr, unsigned long long *returnaddr){
+void handle_exec(sandbox *sandb, uregs *regs, int index){
+	ull fileaddr = get_addr(regs, sandb_syscalls[index].fileindex);
 	char filepath[1000];
-	char mode[10];
-	int m;
 	
 	if(sandb->insyscall == 0){//syscall entry
-		sandb->insyscall = 1;
+		char realfilepath[1000];
+		char newpath[1000];
 
-		get_string(sandb, fileaddr, filepath);
-		m=get_open_mode(modeaddr, mode);
-		printf("Open(\"%s\",%s)", filepath, mode);
-		
-		if(block_file(filepath,m)){
-			set_string(sandb,fileaddr,restricted_name);
+		get_string(sandb, &fileaddr, filepath);
+		realpath(filepath,realfilepath);
+		//printf("Creat/Rm(\"%s\")", realfilepath);
+		if(block_file_exec(realfilepath)){
+			//printf(" --blocking %s",realfilepath);			
+			set_string(sandb,&fileaddr,restricted_file);
 			sandb->insyscall = 2 ;	
 		}
+		sandb->insyscall = 1;
 	}
-	
 	else{
-		if(sandb->insyscall==2){
-			set_string(sandb, fileaddr, filepath);
-		}
-			
-		if(*returnaddr < 0){
-			printf(" = %d, %s\n",(int)*returnaddr,strerror(-1*(*returnaddr)));
-		}
-		else{
-			printf(" = %d\n",(int)*returnaddr);
-		}
-	
+		if(sandb->insyscall==2)
+			set_string(sandb, &fileaddr, filepath);
+		//printf(" = %d\n",(int)regs->rax);
 		sandb->insyscall=0;
 	}
 }
 
-int get_open_mode(unsigned long long *flags, char *mode){
-	int accessMode = *flags & O_ACCMODE;
+void handle_write(sandbox *sandb, uregs *regs, int index){
+	ull fileaddr = get_addr(regs, sandb_syscalls[index].fileindex);
+	char filepath[1000];
+	
+	if(sandb->insyscall == 0){//syscall entry
+		int mode = 1, n; //write permission
+		char realfilepath[1000];
+		char newpath[1000];
 
-	strcpy(mode,"");
-	if(accessMode==O_WRONLY){
-		strcat(mode,"O_WRONLY");
-		return 1;
+		get_string(sandb, &fileaddr, filepath);
+		realpath(filepath,realfilepath);
+		//printf("Creat/Rm(\"%s\")", realfilepath);
+		
+		n = strlen(realfilepath)-strlen(strrchr(realfilepath, '/'));
+		strncpy(newpath,realfilepath,n);
+		strcpy(realfilepath, newpath);
+
+		if(block_file(realfilepath,mode)){
+			//printf(" --blocking %s",realfilepath);			
+			set_string(sandb,&fileaddr,restricted_file);
+			sandb->insyscall = 2 ;	
+		}
+		sandb->insyscall = 1;
 	}
-	else if(accessMode == O_RDWR){
-		strcat(mode,"O_RDWR");
-		return 3;
+	else{
+		if(sandb->insyscall==2)
+			set_string(sandb, &fileaddr, filepath);
+		//printf(" = %d\n",(int)regs->rax);
+		sandb->insyscall=0;
 	}
-	strcat(mode,"O_RDONLY");
-	return 2;
+}
+
+void handle_open(sandbox *sandb, uregs *regs, int index){
+	char filepath[1000];
+	ull fileaddr = get_addr(regs, sandb_syscalls[index].fileindex);
+	
+	if(sandb->insyscall == 0){//syscall entry
+		ull modeaddr = get_addr(regs, sandb_syscalls[index].fileindex+1);
+		int creat = ((modeaddr & 67) > 3);
+		int mode = modeaddr & O_ACCMODE;
+		char realfilepath[1000];
+		
+		get_string(sandb, &fileaddr, filepath);
+		realpath(filepath,realfilepath);
+		//printf("Open(\"%s\",%d,%d)", realfilepath, mode, creat);
+		int filenotexist = (access(realfilepath, F_OK ) == -1);
+		//printf(" --filenotexist %d ", filenotexist);
+		
+		if(creat && filenotexist){
+			char newpath[1000];
+			int n = strlen(realfilepath)-strlen(strrchr(realfilepath, '/'));
+			strncpy(newpath,realfilepath,n);
+			strcpy(realfilepath, newpath);
+			mode = 1;
+		}
+		
+		if(block_file(realfilepath,mode)){
+			//printf("--Blocking %s ", realfilepath);
+			set_string(sandb,&fileaddr,restricted_file);
+			sandb->insyscall = 2;	
+		}
+		
+		sandb->insyscall = 1;
+	}
+	else{
+		if(sandb->insyscall==2)
+			set_string(sandb, &fileaddr, filepath);
+		//printf(" = %d\n",(int)regs->rax);
+		sandb->insyscall=0;
+	}
 }
 
 int find_config(char *config_path){
@@ -155,7 +222,6 @@ int find_config(char *config_path){
 		return(EXIT_FAILURE);
 	
 	strcpy(global_config_path,config_path);
-	printf("Found config file at %s.\n",global_config_path);
 	return(EXIT_SUCCESS);
 }
 				
@@ -217,7 +283,7 @@ int main(int argc, char **argv){
 	return EXIT_SUCCESS;
 }
 
-void get_string(sandbox *sandb, unsigned long long *addr, char *str){   
+void get_string(sandbox *sandb, ull *addr, char *str){   
     char *laddr;
     int i;
     union u {
@@ -237,7 +303,7 @@ void get_string(sandbox *sandb, unsigned long long *addr, char *str){
     }
 }
 
-void set_string(sandbox *sandb, unsigned long long *addr, char *str){   
+void set_string(sandbox *sandb, ull *addr, char *str){   
 	char *laddr;
     int i;
     union u {
@@ -267,16 +333,12 @@ void sandb_handle_syscall(sandbox *sandb) {
 	for(i = 0; i < sizeof(sandb_syscalls)/sizeof(*sandb_syscalls); i++) {
 		if(regs.orig_rax == sandb_syscalls[i].syscall) {
 			if(sandb_syscalls[i].callback != NULL){
-				if(sandb_syscalls[i].pathpos==0)
-					sandb_syscalls[i].callback(sandb,&regs.rdi,&regs.rsi,&regs.rax);
-				else
-					sandb_syscalls[i].callback(sandb,&regs.rsi,&regs.rdx,&regs.rax);
+				sandb_syscalls[i].callback(sandb,&regs,i);
 			}
 			return;
 		}
 	}
-	//if(!found)
-	//	printf("System call %llu\n", regs.orig_rax);
+	//printf("System call %llu\n", regs.orig_rax);
 
 	if(regs.orig_rax == -1){
 		printf("[SANDBOX] Segfault ?! KILLING !!!\n");
