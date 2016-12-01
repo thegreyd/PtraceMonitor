@@ -1,0 +1,18 @@
+#Author - Siddharth Sharma, CS501 Assignment 1: Sandbox
+
+##Links:
+- (https://github.com/t00sh/p-sandbox/blob/master/p-sandbox.c)
+    + Code referenced as a template for the program, to insert further code inside.
+- (https://www.linuxjournal.com/article/6100?page=0,2)
+    + Get_data and Put_data functions code referenced and modified to work inside sandbox. 
+- (https://www.cs.rutgers.edu/~pxk/416/notes/c-tutorials/wait.html)
+    + Code Referred for implementing Ptrace and Wait functionality.
+- (https://www.cs.rutgers.edu/~pxk/416/notes/c-tutorials/exec.html)
+    + Code Referred for implementing Exec functionality.
+- GNU C library reference
+
+#Students:
+- Amit Barve 
+    + provided help in understanding Makefiles.
+    + For identifying most important system calls.
+    + Help in understanding/identifying correct behaviour for certain test cases for the sandbox.  
