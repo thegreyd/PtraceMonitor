@@ -1,13 +1,4 @@
-
-CSC 501 Program: Sandbox
-Assignment:
-
-Build a simple sandbox using the ptrace system call.
-Due:
-See home page.
-Description
-
-This file has been heavily modified since the original announcement. Here is the diff.
+A simple sandbox using the ptrace system call.
 
 Build fend—a simple sandbox using the ptrace system call. This sandbox guards all access to all files 1 by a program. If an access is disallowed the offending system call will return the EACESS error code.
 
@@ -46,32 +37,5 @@ If no specification matches the file name, then fend will not restrict the acces
 
 at the top of the config file.
 
-Turn In:
-Be sure to turnin all the files needed. Include a Makefile that creates the appropriate files. A appropriate penalty will be assessed if this is not so.
-
-Also, denote any resources used--including other students--in a file named REFERENCES.
-Resources
-
-    Relevant man pages: ptrace(2), perror(2), intro(2), fork(2), execve(2), execl(3), sysctl(3), exec(3), glob(3)
-    t00sh's github repo
-
-Evaluation
-
-Student programs will be evaluated by "sandboxing" a set of test programs. For example:
-
-    for test in tests; do ./fend -c config test > test.out 2>&1; done
-
-Notes:
-
-    The code will be tested on the VCL image named here.
-    Students are not required to monitor calls of child threads (think: pthread_create). No test case will create threads.
-
-Extra Credit:
-
-The ptrace call only traces the calls from the immediate child subprocess. Thus a traced program one can break out of the sandbox by forking a child (grandchild of the tracer). For extra credit, student programs will sandbox all ancestors (child, grandchildren, etc,) from the traced program.
-
-Submit an empty file name EXTRA_CREDIT (i.e., `touch EXTRA_CREDIT`) in order to be graded for the extra credit.
-
-This extra credit assignment is worth 5%.
 
 [1] The term "files" refers to any entity that can be accessed (ie, named) in the file system. This includes but is not limited to files, directories, and links. 
